@@ -173,7 +173,7 @@ def gerar_excel_para_download(df: pd.DataFrame) -> BytesIO:
 # Interface Streamlit
 # ==============================
 
-st.title("Unificação de Operações & Cruzamento com Assessores")
+st.title("Unificação de Operações - Renova")
 
 st.markdown(
     """
