@@ -127,23 +127,24 @@ def processar_dados(df_assessores: pd.DataFrame, df_ops: pd.DataFrame) -> pd.Dat
         "Código do Produto": "Cod Produto",
     })
 
-        # =========================
+    # =========================
     # NOVA COLUNA: Ref+Bid ($)
     # =========================
+    # Garante que estamos trabalhando com números
     df_merged["Ref"] = pd.to_numeric(df_merged["Ref"], errors="coerce")
     df_merged["Paga/Recebe"] = pd.to_numeric(df_merged["Paga/Recebe"], errors="coerce")
     df_merged["Quantidade"] = pd.to_numeric(df_merged["Quantidade"], errors="coerce")
-    
+
+    # (Ref + Bid) * Quantidade
     df_merged["Ref+Bid"] = (df_merged["Ref"] + df_merged["Paga/Recebe"]) * df_merged["Quantidade"]
-    
-    # Formatar em R$
+
+    # Formato monetário brasileiro em texto
     df_merged["Ref+Bid"] = df_merged["Ref+Bid"].apply(
         lambda x: f"R$ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
         if pd.notnull(x) else ""
     )
 
-
-    # Classificação textual: PAGA / RECEBE / NEUTRO (pode ser útil pra você)
+    # Classificação textual: PAGA / RECEBE / NEUTRO
     df_merged["Cliente_Paga_Recebe"] = df_merged["Paga/Recebe"].apply(
         lambda x: "PAGA" if x < 0 else ("RECEBE" if x > 0 else "NEUTRO")
     )
@@ -166,6 +167,7 @@ def processar_dados(df_assessores: pd.DataFrame, df_ops: pd.DataFrame) -> pd.Dat
         "Ref",
         "Paga/Recebe",
         "Cliente_Paga_Recebe",
+        "Ref+Bid",
         "Cod Produto",
     ]
 
@@ -175,6 +177,7 @@ def processar_dados(df_assessores: pd.DataFrame, df_ops: pd.DataFrame) -> pd.Dat
     df_final = df_merged[colunas_saida]
 
     return df_final
+
 
 
 def gerar_excel_para_download(df: pd.DataFrame) -> BytesIO:
