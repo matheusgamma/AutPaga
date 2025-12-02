@@ -127,6 +127,22 @@ def processar_dados(df_assessores: pd.DataFrame, df_ops: pd.DataFrame) -> pd.Dat
         "Código do Produto": "Cod Produto",
     })
 
+        # =========================
+    # NOVA COLUNA: Ref+Bid ($)
+    # =========================
+    df_merged["Ref"] = pd.to_numeric(df_merged["Ref"], errors="coerce")
+    df_merged["Paga/Recebe"] = pd.to_numeric(df_merged["Paga/Recebe"], errors="coerce")
+    df_merged["Quantidade"] = pd.to_numeric(df_merged["Quantidade"], errors="coerce")
+    
+    df_merged["Ref+Bid"] = (df_merged["Ref"] + df_merged["Paga/Recebe"]) * df_merged["Quantidade"]
+    
+    # Formatar em R$
+    df_merged["Ref+Bid"] = df_merged["Ref+Bid"].apply(
+        lambda x: f"R$ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        if pd.notnull(x) else ""
+    )
+
+
     # Classificação textual: PAGA / RECEBE / NEUTRO (pode ser útil pra você)
     df_merged["Cliente_Paga_Recebe"] = df_merged["Paga/Recebe"].apply(
         lambda x: "PAGA" if x < 0 else ("RECEBE" if x > 0 else "NEUTRO")
