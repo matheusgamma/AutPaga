@@ -35,7 +35,8 @@ def primeira_nao_nula(serie: pd.Series):
 
 def processar_dados(df_assessores: pd.DataFrame, df_ops: pd.DataFrame) -> pd.DataFrame:
     """
-    Unifica operações multi-pernas da planilha padrão e cruza com a base de assessores.
+    Unifica operações multi-pernas da planilha padrão, cruza com a base de assessores
+    e calcula Ref+Bid (R$) e % Saindo agora.
     """
 
     # --- Garantir que as colunas necessárias existem ---
@@ -72,7 +73,6 @@ def processar_dados(df_assessores: pd.DataFrame, df_ops: pd.DataFrame) -> pd.Dat
     df_assessores = df_assessores.copy()
 
     # --- Agrupamento para unificar operações ---
-    # Chaves para identificar uma operação única
     group_cols = [
         "Data_Operação",
         "Conta_Cliente",
@@ -84,24 +84,15 @@ def processar_dados(df_assessores: pd.DataFrame, df_ops: pd.DataFrame) -> pd.Dat
     ]
 
     agg_dict = {
-        # info mais "técnica" das pernas
         "Tipo Operação": lambda x: ", ".join(sorted(set(x.dropna()))),
         "Tipo Opção": lambda x: ", ".join(sorted(set(x.dropna()))),
-
-        # regra: preço exercício -> menor (ex: collar, pega strike mais baixo)
         "Preço Exercício": "min",
-
-        # normalmente iguais entre pernas; em caso de diferença, pega o maior
         "Quantidade": "max",
-
-        # pega primeira info válida
         "Barreira Knock In": primeira_nao_nula,
         "Barreira Knock Out": primeira_nao_nula,
         "Direção da Barreira": primeira_nao_nula,
         "Rebate": primeira_nao_nula,
         "KnockInAtingido": primeira_nao_nula,
-
-        # aqui é o ponto principal: soma dos bids/offers
         "Bid(+)/Offer(-)": "sum",
     }
 
@@ -120,7 +111,7 @@ def processar_dados(df_assessores: pd.DataFrame, df_ops: pd.DataFrame) -> pd.Dat
         how="left",
     )
 
-    # Renomear / montar colunas finais
+    # Renomear colunas
     df_merged = df_merged.rename(columns={
         "Nome": "Nome Cliente",
         "Bid(+)/Offer(-)": "Paga/Recebe",
@@ -128,28 +119,42 @@ def processar_dados(df_assessores: pd.DataFrame, df_ops: pd.DataFrame) -> pd.Dat
     })
 
     # =========================
-    # NOVA COLUNA: Ref+Bid ($)
+    # GARANTIR TIPOS NUMÉRICOS
     # =========================
-    # Garante que estamos trabalhando com números
     df_merged["Ref"] = pd.to_numeric(df_merged["Ref"], errors="coerce")
     df_merged["Paga/Recebe"] = pd.to_numeric(df_merged["Paga/Recebe"], errors="coerce")
     df_merged["Quantidade"] = pd.to_numeric(df_merged["Quantidade"], errors="coerce")
+    df_merged["Preço Exercício"] = pd.to_numeric(df_merged["Preço Exercício"], errors="coerce")
 
+    # =========================
+    # Ref+Bid (valor financeiro total)
     # (Ref + Bid) * Quantidade
-    df_merged["Ref+Bid"] = (df_merged["Ref"] + df_merged["Paga/Recebe"]) * df_merged["Quantidade"]
+    # =========================
+    df_merged["Ref+Bid_valor"] = (df_merged["Ref"] + df_merged["Paga/Recebe"]) * df_merged["Quantidade"]
 
-    # Formato monetário brasileiro em texto
-    df_merged["Ref+Bid"] = df_merged["Ref+Bid"].apply(
+    # Formatar Ref+Bid em R$
+    df_merged["Ref+Bid"] = df_merged["Ref+Bid_valor"].apply(
         lambda x: f"R$ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
         if pd.notnull(x) else ""
     )
 
-    # Classificação textual: PAGA / RECEBE / NEUTRO
+    # =========================
+    # % Saindo agora
+    # ((Ref + Bid) / Preço Exercício - 1) * 100
+    # =========================
+    base_preco = (df_merged["Ref"] + df_merged["Paga/Recebe"])
+    df_merged["% Saindo agora"] = ((base_preco / df_merged["Preço Exercício"]) - 1) * 100
+
+    df_merged["% Saindo agora"] = df_merged["% Saindo agora"].apply(
+        lambda x: f"{x:.2f}%".replace(".", ",") if pd.notnull(x) else ""
+    )
+
+    # Classificação PAGA / RECEBE / NEUTRO com base em Paga/Recebe (soma dos bids)
     df_merged["Cliente_Paga_Recebe"] = df_merged["Paga/Recebe"].apply(
         lambda x: "PAGA" if x < 0 else ("RECEBE" if x > 0 else "NEUTRO")
     )
 
-    # Ordenar / selecionar colunas principais no layout que você pediu
+    # Colunas de saída
     colunas_saida = [
         "Data_Operação",
         "Conta_Cliente",
@@ -168,15 +173,16 @@ def processar_dados(df_assessores: pd.DataFrame, df_ops: pd.DataFrame) -> pd.Dat
         "Paga/Recebe",
         "Cliente_Paga_Recebe",
         "Ref+Bid",
+        "% Saindo agora",
         "Cod Produto",
     ]
 
-    # Garante que só usamos colunas que existem (caso alguma esteja 100% vazia no input)
     colunas_saida = [c for c in colunas_saida if c in df_merged.columns]
 
     df_final = df_merged[colunas_saida]
 
     return df_final
+
 
 
 
