@@ -23,10 +23,6 @@ def normalizar_preco(p):
         return p / 100
     return p
 
-
-df_dash["Preço Abertura"] = df_dash["Preço Abertura"].apply(normalizar_preco)
-df_dash["Preço Mercado"] = df_dash["Preço Mercado"].apply(normalizar_preco)
-
 def carregar_arquivo(uploaded_file) -> pd.DataFrame | None:
     """Lê CSV ou Excel e retorna DataFrame."""
     if uploaded_file is None:
@@ -247,6 +243,10 @@ def processar_dados(df_assessores: pd.DataFrame, df_ops: pd.DataFrame, df_dash: 
     df_dash["Fixing_norm"] = df_dash["Data de Fixing"].apply(norm_date)
     df_dash["Preço Abertura"] = df_dash["Preço de Abertura"].apply(br_to_float)
     df_dash["Preço Mercado"] = df_dash["Preço de Mercado"].apply(br_to_float)
+
+    df_dash["Preço Abertura"] = df_dash["Preço Abertura"].apply(normalizar_preco)
+    df_dash["Preço Mercado"] = df_dash["Preço Mercado"].apply(normalizar_preco)
+
 
     # --- Merge com Dash pelo identificador da operação: Conta + Ativo + Data de Fixing ---
     dash_keys = ["Conta", "Ativo", "Fixing_norm"]
