@@ -1,6 +1,9 @@
 import streamlit as st
 import pandas as pd
 from io import BytesIO
+import numpy as np
+import yfinance as yf
+
 
 st.set_page_config(page_title="Unificação de Operações", layout="wide")
 
@@ -32,11 +35,69 @@ def primeira_nao_nula(serie: pd.Series):
     serie_drop = serie.dropna()
     return serie_drop.iloc[0] if not serie_drop.empty else None
 
-
-def processar_dados(df_assessores: pd.DataFrame, df_ops: pd.DataFrame) -> pd.DataFrame:
+@st.cache_data(show_spinner=False, ttl=60 * 30)
+def get_preco_mercado_yf(ativo: str) -> float | None:
     """
-    Unifica operações multi-pernas da planilha padrão, cruza com a base de assessores
-    e calcula Ref+Bid (R$) e % Saindo agora.
+    Puxa o preço de mercado via yfinance.
+    Para B3, tenta sufixo .SA (ex: RAIL3 -> RAIL3.SA).
+    """
+    if not ativo or pd.isna(ativo):
+        return None
+
+    ativo = str(ativo).strip().upper()
+
+    # tenta como veio
+    tickers_try = [ativo]
+
+    # se parece ticker B3, tenta .SA
+    if ativo.endswith(("3", "4", "11", "5", "6")) and ".SA" not in ativo:
+        tickers_try.append(f"{ativo}.SA")
+
+    for t in tickers_try:
+        try:
+            tk = yf.Ticker(t)
+            # fast_info costuma ser mais rápido quando disponível
+            price = None
+            if hasattr(tk, "fast_info") and tk.fast_info:
+                price = tk.fast_info.get("last_price", None)
+
+            if price is None:
+                hist = tk.history(period="5d")
+                if hist is not None and not hist.empty:
+                    price = float(hist["Close"].dropna().iloc[-1])
+
+            if price is not None and not (isinstance(price, float) and np.isnan(price)):
+                return float(price)
+        except Exception:
+            continue
+
+    return None
+
+
+def br_to_float(x):
+    """
+    Converte número vindo como '20,67' ou '20.67' para float.
+    """
+    if pd.isna(x):
+        return np.nan
+    if isinstance(x, (int, float, np.number)):
+        return float(x)
+    s = str(x).strip()
+    if s == "":
+        return np.nan
+    # remove milhares e troca vírgula por ponto quando for padrão BR
+    s = s.replace(".", "").replace(",", ".")
+    try:
+        return float(s)
+    except Exception:
+        return np.nan
+
+
+
+def processar_dados(df_assessores: pd.DataFrame, df_ops: pd.DataFrame, df_abertura: pd.DataFrame) -> pd.DataFrame:
+    """
+    Unifica operações multi-pernas da planilha padrão, cruza com a base de assessores,
+    cruza com a planilha de preço de abertura (coluna K) e calcula resultado saindo hoje.
     """
 
     # --- Garantir que as colunas necessárias existem ---
@@ -71,6 +132,7 @@ def processar_dados(df_assessores: pd.DataFrame, df_ops: pd.DataFrame) -> pd.Dat
 
     df_ops = df_ops.copy()
     df_assessores = df_assessores.copy()
+    df_abertura = df_abertura.copy()
 
     # --- Agrupamento para unificar operações ---
     group_cols = [
@@ -111,7 +173,7 @@ def processar_dados(df_assessores: pd.DataFrame, df_ops: pd.DataFrame) -> pd.Dat
         how="left",
     )
 
-    # Renomear colunas
+    # Renomear / montar colunas finais
     df_merged = df_merged.rename(columns={
         "Nome": "Nome Cliente",
         "Bid(+)/Offer(-)": "Paga/Recebe",
@@ -119,42 +181,86 @@ def processar_dados(df_assessores: pd.DataFrame, df_ops: pd.DataFrame) -> pd.Dat
     })
 
     # =========================
-    # GARANTIR TIPOS NUMÉRICOS
+    # TIPOS NUMÉRICOS (robusto BR)
     # =========================
-    df_merged["Ref"] = pd.to_numeric(df_merged["Ref"], errors="coerce")
-    df_merged["Paga/Recebe"] = pd.to_numeric(df_merged["Paga/Recebe"], errors="coerce")
-    df_merged["Quantidade"] = pd.to_numeric(df_merged["Quantidade"], errors="coerce")
-    df_merged["Preço Exercício"] = pd.to_numeric(df_merged["Preço Exercício"], errors="coerce")
+    df_merged["Ref"] = df_merged["Ref"].apply(br_to_float)
+    df_merged["Paga/Recebe"] = df_merged["Paga/Recebe"].apply(br_to_float)
+    df_merged["Quantidade"] = df_merged["Quantidade"].apply(br_to_float)
+    df_merged["Preço Exercício"] = df_merged["Preço Exercício"].apply(br_to_float)
 
     # =========================
-    # Ref+Bid (valor financeiro total)
-    # (Ref + Bid) * Quantidade
+    # 1) CRUZAR com Preço de Abertura (coluna K)
     # =========================
-    df_merged["Ref+Bid_valor"] = (df_merged["Ref"] + df_merged["Paga/Recebe"]) * df_merged["Quantidade"]
+    # Você vai me mandar a estrutura; por enquanto eu deixo um "default" de chaves
+    # que normalmente batem: Conta + Ativo + Fixing + Estrutura.
+    #
+    # IMPORTANTÍSSIMO: a coluna K precisa virar um nome fixo aqui.
+    preco_abertura_col = df_abertura.columns[10]  # coluna K = índice 10 (0-based)
+    df_abertura = df_abertura.rename(columns={preco_abertura_col: "Preço Abertura"})
 
-    # Formatar Ref+Bid em R$
-    df_merged["Ref+Bid"] = df_merged["Ref+Bid_valor"].apply(
-        lambda x: f"R$ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-        if pd.notnull(x) else ""
+    # Ajuste aqui quando você me mandar o layout real:
+    # Essas colunas precisam existir no df_abertura com esses nomes OU você renomeia antes.
+    chaves_abertura = ["Conta_Cliente", "Ativo", "Fixing", "Estrutura"]
+
+    # Tenta mapear "Conta_Cliente" se a planilha vier com outro nome (ex: "Conta")
+    if "Conta_Cliente" not in df_abertura.columns and "Conta" in df_abertura.columns:
+        df_abertura = df_abertura.rename(columns={"Conta": "Conta_Cliente"})
+
+    # Converte preço abertura e garante Fixing como string padronizada (se for data)
+    df_abertura["Preço Abertura"] = df_abertura["Preço Abertura"].apply(br_to_float)
+
+    # Merge trazendo preço de abertura
+    df_merged = df_merged.merge(
+        df_abertura[chaves_abertura + ["Preço Abertura"]].drop_duplicates(chaves_abertura),
+        on=chaves_abertura,
+        how="left",
     )
 
     # =========================
-    # % Saindo agora
-    # ((Ref + Bid) / Preço Exercício - 1) * 100
+    # 2) Preço de mercado do ativo
     # =========================
-    base_preco = (df_merged["Ref"] + df_merged["Paga/Recebe"])
-    df_merged["% Saindo agora"] = ((base_preco / df_merged["Preço Exercício"]) - 1) * 100
+    df_merged["Preço Mercado"] = df_merged["Ativo"].apply(get_preco_mercado_yf)
 
-    df_merged["% Saindo agora"] = df_merged["% Saindo agora"].apply(
-        lambda x: f"{x:.2f}%".replace(".", ",") if pd.notnull(x) else ""
-    )
+    # =========================
+    # 3) Resultado prévio + Bid_total + Resultado saindo hoje
+    # =========================
+    # Resultado prévio por papel: (Preço Mercado - Preço Abertura) * Quantidade
+    df_merged["Resultado Prévio"] = (df_merged["Preço Mercado"] - df_merged["Preço Abertura"]) * df_merged["Quantidade"]
 
-    # Classificação PAGA / RECEBE / NEUTRO com base em Paga/Recebe (soma dos bids)
+    # Bid_total: (Bid somado) * Quantidade
+    df_merged["Bid Total"] = df_merged["Paga/Recebe"] * df_merged["Quantidade"]
+
+    # Resultado financeiro saindo hoje
+    df_merged["Resultado Saindo Hoje"] = df_merged["Resultado Prévio"] + df_merged["Bid Total"]
+
+    # =========================
+    # 4) % Saindo Hoje
+    # Base = Quantidade * Preço Abertura
+    # % = ((Base + Resultado) / Base - 1) * 100
+    # =========================
+    df_merged["Base (Abertura)"] = df_merged["Quantidade"] * df_merged["Preço Abertura"]
+    df_merged["% Saindo Hoje"] = ((df_merged["Base (Abertura)"] + df_merged["Resultado Saindo Hoje"]) / df_merged["Base (Abertura)"] - 1) * 100
+
+    # =========================
+    # Formatações (texto) pro Excel/visual
+    # =========================
+    def fmt_rs(x):
+        return f"R$ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") if pd.notnull(x) else ""
+
+    def fmt_pct(x):
+        return f"{x:.2f}%".replace(".", ",") if pd.notnull(x) else ""
+
+    df_merged["Resultado Prévio"] = df_merged["Resultado Prévio"].apply(fmt_rs)
+    df_merged["Bid Total"] = df_merged["Bid Total"].apply(fmt_rs)
+    df_merged["Resultado Saindo Hoje"] = df_merged["Resultado Saindo Hoje"].apply(fmt_rs)
+    df_merged["% Saindo Hoje"] = df_merged["% Saindo Hoje"].apply(fmt_pct)
+
+    # Classificação textual: PAGA / RECEBE / NEUTRO (baseado no Bid somado)
     df_merged["Cliente_Paga_Recebe"] = df_merged["Paga/Recebe"].apply(
-        lambda x: "PAGA" if x < 0 else ("RECEBE" if x > 0 else "NEUTRO")
+        lambda x: "PAGA" if pd.notnull(x) and x < 0 else ("RECEBE" if pd.notnull(x) and x > 0 else "NEUTRO")
     )
 
-    # Colunas de saída
+    # Colunas de saída (mantive as suas + novas)
     colunas_saida = [
         "Data_Operação",
         "Conta_Cliente",
@@ -163,25 +269,23 @@ def processar_dados(df_assessores: pd.DataFrame, df_ops: pd.DataFrame) -> pd.Dat
         "Ativo",
         "Preço Exercício",
         "Quantidade",
-        "Barreira Knock In",
-        "Barreira Knock Out",
-        "Direção da Barreira",
         "Fixing",
-        "KnockInAtingido",
         "Estrutura",
         "Ref",
         "Paga/Recebe",
         "Cliente_Paga_Recebe",
-        "Ref+Bid",
-        "% Saindo agora",
+        "Preço Abertura",
+        "Preço Mercado",
+        "Resultado Prévio",
+        "Bid Total",
+        "Resultado Saindo Hoje",
+        "% Saindo Hoje",
         "Cod Produto",
     ]
 
     colunas_saida = [c for c in colunas_saida if c in df_merged.columns]
+    return df_merged[colunas_saida]
 
-    df_final = df_merged[colunas_saida]
-
-    return df_final
 
 
 
@@ -209,31 +313,30 @@ st.markdown(
     """
 )
 
-col1, col2 = st.columns(2)
+col1, col2, col3 = st.columns(3)
 
 with col1:
-    file_assessores = st.file_uploader(
-        "📂 Base de Assessores",
-        type=["xlsx", "xls", "csv"],
-        key="file_assessores",
-    )
+    file_assessores = st.file_uploader("📂 Base de Assessores", type=["xlsx", "xls", "csv"], key="file_assessores")
 
 with col2:
-    file_ops = st.file_uploader(
-        "📂 Planilha Padrão de Operações",
-        type=["xlsx", "xls", "csv"],
-        key="file_ops",
-    )
+    file_ops = st.file_uploader("📂 Planilha Padrão de Operações", type=["xlsx", "xls", "csv"], key="file_ops")
 
-if st.button("🚀 Processar"):
-    if not file_assessores or not file_ops:
-        st.warning("Envie as **duas** planilhas antes de processar.")
-    else:
-        df_assessores = carregar_arquivo(file_assessores)
-        df_ops = carregar_arquivo(file_ops)
+with col3:
+    file_abertura = st.file_uploader("📂 Dash Preço de Abertura", type=["xlsx", "xls", "csv"], key="file_abertura")
 
-        if df_assessores is None or df_ops is None:
-            st.stop()
+
+if not file_assessores or not file_ops or not file_abertura:
+    st.warning("Envie as **três** planilhas antes de processar.")
+else:
+    df_assessores = carregar_arquivo(file_assessores)
+    df_ops = carregar_arquivo(file_ops)
+    df_abertura = carregar_arquivo(file_abertura)
+
+    if df_assessores is None or df_ops is None or df_abertura is None:
+        st.stop()
+
+    df_resultado = processar_dados(df_assessores, df_ops, df_abertura)
+
 
         try:
             df_resultado = processar_dados(df_assessores, df_ops)
