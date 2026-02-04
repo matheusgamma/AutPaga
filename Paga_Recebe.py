@@ -94,11 +94,35 @@ def br_to_float(x):
 
 
 
-def processar_dados(df_assessores: pd.DataFrame, df_ops: pd.DataFrame, df_abertura: pd.DataFrame) -> pd.DataFrame:
+def processar_dados(df_assessores: pd.DataFrame, df_ops: pd.DataFrame, df_dash: pd.DataFrame) -> pd.DataFrame:
     """
     Unifica operações multi-pernas da planilha padrão, cruza com a base de assessores,
-    cruza com a planilha de preço de abertura (coluna K) e calcula resultado saindo hoje.
+    cruza com o Dash (Preço Abertura / Mercado) e calcula resultado saindo hoje.
     """
+
+    # ==============================
+    # Helpers locais (pra não "fugir" do seu arquivo)
+    # ==============================
+    def br_to_float(x):
+        if pd.isna(x):
+            return pd.NA
+        if isinstance(x, (int, float)):
+            return float(x)
+        s = str(x).strip()
+        if s == "":
+            return pd.NA
+        s = s.replace(".", "").replace(",", ".")
+        try:
+            return float(s)
+        except Exception:
+            return pd.NA
+
+    def norm_date(x):
+        # normaliza para date (sem horário)
+        dt = pd.to_datetime(x, errors="coerce", dayfirst=True)
+        if pd.isna(dt):
+            return pd.NaT
+        return dt.date()
 
     # --- Garantir que as colunas necessárias existem ---
     cols_assessores_obrig = {"Conta", "Nome", "Assessor"}
@@ -121,18 +145,22 @@ def processar_dados(df_assessores: pd.DataFrame, df_ops: pd.DataFrame, df_abertu
         "Bid(+)/Offer(-)",
         "Código do Produto",
     }
+    cols_dash_obrig = {"Conta", "Ativo", "Data de Fixing", "Preço de Abertura", "Preço de Mercado"}
 
     faltando_ass = cols_assessores_obrig - set(df_assessores.columns)
     faltando_ops = cols_ops_obrig - set(df_ops.columns)
+    faltando_dash = cols_dash_obrig - set(df_dash.columns)
 
     if faltando_ass:
         raise ValueError(f"Faltam colunas na base de assessores: {faltando_ass}")
     if faltando_ops:
         raise ValueError(f"Faltam colunas na planilha padrão: {faltando_ops}")
+    if faltando_dash:
+        raise ValueError(f"Faltam colunas no Dash (preço abertura): {faltando_dash}")
 
     df_ops = df_ops.copy()
     df_assessores = df_assessores.copy()
-    df_abertura = df_abertura.copy()
+    df_dash = df_dash.copy()
 
     # --- Agrupamento para unificar operações ---
     group_cols = [
@@ -148,13 +176,16 @@ def processar_dados(df_assessores: pd.DataFrame, df_ops: pd.DataFrame, df_abertu
     agg_dict = {
         "Tipo Operação": lambda x: ", ".join(sorted(set(x.dropna()))),
         "Tipo Opção": lambda x: ", ".join(sorted(set(x.dropna()))),
+
         "Preço Exercício": "min",
         "Quantidade": "max",
+
         "Barreira Knock In": primeira_nao_nula,
         "Barreira Knock Out": primeira_nao_nula,
         "Direção da Barreira": primeira_nao_nula,
         "Rebate": primeira_nao_nula,
         "KnockInAtingido": primeira_nao_nula,
+
         "Bid(+)/Offer(-)": "sum",
     }
 
@@ -181,68 +212,64 @@ def processar_dados(df_assessores: pd.DataFrame, df_ops: pd.DataFrame, df_abertu
     })
 
     # =========================
-    # TIPOS NUMÉRICOS (robusto BR)
+    # Normalização de tipos p/ cálculo e merge com Dash
     # =========================
+    # Ops
+    df_merged["Conta_Cliente"] = pd.to_numeric(df_merged["Conta_Cliente"], errors="coerce")
+    df_merged["Ativo"] = df_merged["Ativo"].astype(str).str.strip().str.upper()
+    df_merged["Fixing_norm"] = df_merged["Fixing"].apply(norm_date)
+
     df_merged["Ref"] = df_merged["Ref"].apply(br_to_float)
     df_merged["Paga/Recebe"] = df_merged["Paga/Recebe"].apply(br_to_float)
     df_merged["Quantidade"] = df_merged["Quantidade"].apply(br_to_float)
     df_merged["Preço Exercício"] = df_merged["Preço Exercício"].apply(br_to_float)
 
-    # =========================
-    # 1) CRUZAR com Preço de Abertura (coluna K)
-    # =========================
-    # Você vai me mandar a estrutura; por enquanto eu deixo um "default" de chaves
-    # que normalmente batem: Conta + Ativo + Fixing + Estrutura.
-    #
-    # IMPORTANTÍSSIMO: a coluna K precisa virar um nome fixo aqui.
-    preco_abertura_col = df_abertura.columns[10]  # coluna K = índice 10 (0-based)
-    df_abertura = df_abertura.rename(columns={preco_abertura_col: "Preço Abertura"})
+    # Dash
+    df_dash["Conta"] = pd.to_numeric(df_dash["Conta"], errors="coerce")
+    df_dash["Ativo"] = df_dash["Ativo"].astype(str).str.strip().str.upper()
+    df_dash["Fixing_norm"] = df_dash["Data de Fixing"].apply(norm_date)
+    df_dash["Preço Abertura"] = df_dash["Preço de Abertura"].apply(br_to_float)
+    df_dash["Preço Mercado"] = df_dash["Preço de Mercado"].apply(br_to_float)
 
-    # Ajuste aqui quando você me mandar o layout real:
-    # Essas colunas precisam existir no df_abertura com esses nomes OU você renomeia antes.
-    chaves_abertura = ["Conta_Cliente", "Ativo", "Fixing", "Estrutura"]
+    # --- Merge com Dash pelo identificador da operação: Conta + Ativo + Data de Fixing ---
+    dash_keys = ["Conta", "Ativo", "Fixing_norm"]
+    df_dash_min = (
+        df_dash[dash_keys + ["Preço Abertura", "Preço Mercado"]]
+        .dropna(subset=["Conta", "Ativo", "Fixing_norm"])
+        .drop_duplicates(dash_keys)
+    )
 
-    # Tenta mapear "Conta_Cliente" se a planilha vier com outro nome (ex: "Conta")
-    if "Conta_Cliente" not in df_abertura.columns and "Conta" in df_abertura.columns:
-        df_abertura = df_abertura.rename(columns={"Conta": "Conta_Cliente"})
-
-    # Converte preço abertura e garante Fixing como string padronizada (se for data)
-    df_abertura["Preço Abertura"] = df_abertura["Preço Abertura"].apply(br_to_float)
-
-    # Merge trazendo preço de abertura
     df_merged = df_merged.merge(
-        df_abertura[chaves_abertura + ["Preço Abertura"]].drop_duplicates(chaves_abertura),
-        on=chaves_abertura,
+        df_dash_min,
+        left_on=["Conta_Cliente", "Ativo", "Fixing_norm"],
+        right_on=["Conta", "Ativo", "Fixing_norm"],
         how="left",
     )
 
     # =========================
-    # 2) Preço de mercado do ativo
+    # Cálculos “saindo hoje”
     # =========================
-    df_merged["Preço Mercado"] = df_merged["Ativo"].apply(get_preco_mercado_yf)
-
-    # =========================
-    # 3) Resultado prévio + Bid_total + Resultado saindo hoje
-    # =========================
-    # Resultado prévio por papel: (Preço Mercado - Preço Abertura) * Quantidade
+    # Resultado Prévio = (Preço Mercado - Preço Abertura) * Quantidade
     df_merged["Resultado Prévio"] = (df_merged["Preço Mercado"] - df_merged["Preço Abertura"]) * df_merged["Quantidade"]
 
-    # Bid_total: (Bid somado) * Quantidade
+    # Bid Total = Paga/Recebe * Quantidade
     df_merged["Bid Total"] = df_merged["Paga/Recebe"] * df_merged["Quantidade"]
 
-    # Resultado financeiro saindo hoje
+    # Resultado Saindo Hoje = Resultado Prévio + Bid Total
     df_merged["Resultado Saindo Hoje"] = df_merged["Resultado Prévio"] + df_merged["Bid Total"]
 
-    # =========================
-    # 4) % Saindo Hoje
+    # % Saindo Hoje
     # Base = Quantidade * Preço Abertura
-    # % = ((Base + Resultado) / Base - 1) * 100
-    # =========================
     df_merged["Base (Abertura)"] = df_merged["Quantidade"] * df_merged["Preço Abertura"]
     df_merged["% Saindo Hoje"] = ((df_merged["Base (Abertura)"] + df_merged["Resultado Saindo Hoje"]) / df_merged["Base (Abertura)"] - 1) * 100
 
+    # Classificação textual: PAGA / RECEBE / NEUTRO
+    df_merged["Cliente_Paga_Recebe"] = df_merged["Paga/Recebe"].apply(
+        lambda x: "PAGA" if pd.notnull(x) and x < 0 else ("RECEBE" if pd.notnull(x) and x > 0 else "NEUTRO")
+    )
+
     # =========================
-    # Formatações (texto) pro Excel/visual
+    # Formatação (texto) p/ visual/excel
     # =========================
     def fmt_rs(x):
         return f"R$ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") if pd.notnull(x) else ""
@@ -255,12 +282,7 @@ def processar_dados(df_assessores: pd.DataFrame, df_ops: pd.DataFrame, df_abertu
     df_merged["Resultado Saindo Hoje"] = df_merged["Resultado Saindo Hoje"].apply(fmt_rs)
     df_merged["% Saindo Hoje"] = df_merged["% Saindo Hoje"].apply(fmt_pct)
 
-    # Classificação textual: PAGA / RECEBE / NEUTRO (baseado no Bid somado)
-    df_merged["Cliente_Paga_Recebe"] = df_merged["Paga/Recebe"].apply(
-        lambda x: "PAGA" if pd.notnull(x) and x < 0 else ("RECEBE" if pd.notnull(x) and x > 0 else "NEUTRO")
-    )
-
-    # Colunas de saída (mantive as suas + novas)
+    # Ordenar / selecionar colunas finais
     colunas_saida = [
         "Data_Operação",
         "Conta_Cliente",
@@ -285,7 +307,6 @@ def processar_dados(df_assessores: pd.DataFrame, df_ops: pd.DataFrame, df_abertu
 
     colunas_saida = [c for c in colunas_saida if c in df_merged.columns]
     return df_merged[colunas_saida]
-
 
 
 
@@ -322,20 +343,26 @@ with col2:
     file_ops = st.file_uploader("📂 Planilha Padrão de Operações", type=["xlsx", "xls", "csv"], key="file_ops")
 
 with col3:
-    file_abertura = st.file_uploader("📂 Dash Preço de Abertura", type=["xlsx", "xls", "csv"], key="file_abertura")
+    file_abertura = st.file_uploader("📂 Dash Preço de Abertura", type=["xlsx", "xls", "csv"], key="file_dash")
 
 
-if not file_assessores or not file_ops or not file_abertura:
-    st.warning("Envie as **três** planilhas antes de processar.")
-else:
-    df_assessores = carregar_arquivo(file_assessores)
-    df_ops = carregar_arquivo(file_ops)
-    df_abertura = carregar_arquivo(file_abertura)
+if st.button("🚀 Processar"):
+    if not file_assessores or not file_ops or not file_dash:
+        st.warning("Envie as **três** planilhas antes de processar.")
+    else:
+        df_assessores = carregar_arquivo(file_assessores)
+        df_ops = carregar_arquivo(file_ops)
+        df_dash = carregar_arquivo(file_dash)
 
-    if df_assessores is None or df_ops is None or df_abertura is None:
-        st.stop()
+        if df_assessores is None or df_ops is None or df_dash is None:
+            st.stop()
 
-    df_resultado = processar_dados(df_assessores, df_ops, df_abertura)
+        try:
+            df_resultado = processar_dados(df_assessores, df_ops, df_dash)
+        except Exception as e:
+            st.error(f"Erro ao processar os dados: {e}")
+            st.stop()
+
 
 
         try:
