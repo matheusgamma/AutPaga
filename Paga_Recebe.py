@@ -12,6 +12,21 @@ st.set_page_config(page_title="Unificação de Operações", layout="wide")
 # Funções auxiliares
 # ==============================
 
+# =========================
+# NORMALIZAÇÃO DE PREÇO (centavos / lote)
+# =========================
+def normalizar_preco(p):
+    if pd.isna(p):
+        return p
+    # preços absurdos pra ação brasileira → provavelmente centavos ou lote
+    if p > 1000:
+        return p / 100
+    return p
+
+
+df_dash["Preço Abertura"] = df_dash["Preço Abertura"].apply(normalizar_preco)
+df_dash["Preço Mercado"] = df_dash["Preço Mercado"].apply(normalizar_preco)
+
 def carregar_arquivo(uploaded_file) -> pd.DataFrame | None:
     """Lê CSV ou Excel e retorna DataFrame."""
     if uploaded_file is None:
@@ -73,20 +88,7 @@ def get_preco_mercado_yf(ativo: str) -> float | None:
 
     return None
 
-# =========================
-# NORMALIZAÇÃO DE PREÇO (centavos / lote)
-# =========================
-def normalizar_preco(p):
-    if pd.isna(p):
-        return p
-    # preços absurdos pra ação brasileira → provavelmente centavos ou lote
-    if p > 1000:
-        return p / 100
-    return p
 
-
-df_dash["Preço Abertura"] = df_dash["Preço Abertura"].apply(normalizar_preco)
-df_dash["Preço Mercado"] = df_dash["Preço Mercado"].apply(normalizar_preco)
 
 
 def br_to_float(x):
