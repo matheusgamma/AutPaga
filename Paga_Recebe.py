@@ -73,6 +73,21 @@ def get_preco_mercado_yf(ativo: str) -> float | None:
 
     return None
 
+# =========================
+# NORMALIZAÇÃO DE PREÇO (centavos / lote)
+# =========================
+def normalizar_preco(p):
+    if pd.isna(p):
+        return p
+    # preços absurdos pra ação brasileira → provavelmente centavos ou lote
+    if p > 1000:
+        return p / 100
+    return p
+
+
+df_dash["Preço Abertura"] = df_dash["Preço Abertura"].apply(normalizar_preco)
+df_dash["Preço Mercado"] = df_dash["Preço Mercado"].apply(normalizar_preco)
+
 
 def br_to_float(x):
     """
