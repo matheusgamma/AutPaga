@@ -337,13 +337,26 @@ st.markdown(
 col1, col2, col3 = st.columns(3)
 
 with col1:
-    file_assessores = st.file_uploader("📂 Base de Assessores", type=["xlsx", "xls", "csv"], key="file_assessores")
+    file_assessores = st.file_uploader(
+        "📂 Base de Assessores",
+        type=["xlsx", "xls", "csv"],
+        key="file_assessores",
+    )
 
 with col2:
-    file_ops = st.file_uploader("📂 Planilha Padrão de Operações", type=["xlsx", "xls", "csv"], key="file_ops")
+    file_ops = st.file_uploader(
+        "📂 Planilha Padrão de Operações",
+        type=["xlsx", "xls", "csv"],
+        key="file_ops",
+    )
 
 with col3:
-    file_abertura = st.file_uploader("📂 Dash Preço de Abertura", type=["xlsx", "xls", "csv"], key="file_dash")
+    file_dash = st.file_uploader(
+        "📂 Dash Preço de Abertura",
+        type=["xlsx", "xls", "csv"],
+        key="file_dash",
+    )
+
 
 
 if st.button("🚀 Processar"):
@@ -363,16 +376,7 @@ if st.button("🚀 Processar"):
             st.error(f"Erro ao processar os dados: {e}")
             st.stop()
 
-
-
-        try:
-            df_resultado = processar_dados(df_assessores, df_ops)
-        except Exception as e:
-            st.error(f"Erro ao processar os dados: {e}")
-            st.stop()
-
         st.success("Processamento concluído com sucesso! ✅")
-
         st.subheader("Prévia do Resultado Unificado")
         st.dataframe(df_resultado.head(100))
 
@@ -384,3 +388,4 @@ if st.button("🚀 Processar"):
             file_name="resultado_unificado.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
+
