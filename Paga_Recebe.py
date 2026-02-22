@@ -12,6 +12,33 @@ st.set_page_config(page_title="Unificação de Operações", layout="wide")
 # Funções auxiliares
 # ==============================
 
+@st.cache_data(show_spinner=False, ttl=60 * 10)
+def preco_mercado_b3(ativo: str) -> float | None:
+    if not ativo or pd.isna(ativo):
+        return None
+
+    ativo = str(ativo).strip().upper()
+
+    # padrão B3
+    ticker = ativo if ativo.endswith(".SA") else f"{ativo}.SA"
+
+    try:
+        tk = yf.Ticker(ticker)
+        # tenta fast_info (mais rápido)
+        price = None
+        if hasattr(tk, "fast_info") and tk.fast_info:
+            price = tk.fast_info.get("last_price", None)
+
+        # fallback: histórico
+        if price is None:
+            hist = tk.history(period="5d")
+            if hist is not None and not hist.empty:
+                price = float(hist["Close"].dropna().iloc[-1])
+
+        return float(price) if price is not None else None
+    except Exception:
+        return None
+
 # =========================
 # NORMALIZAÇÃO DE PREÇO (centavos / lote)
 # =========================
@@ -108,14 +135,6 @@ def br_to_float(x):
 
 
 def processar_dados(df_assessores: pd.DataFrame, df_ops: pd.DataFrame, df_dash: pd.DataFrame) -> pd.DataFrame:
-    """
-    Unifica operações multi-pernas da planilha padrão, cruza com a base de assessores,
-    cruza com o Dash (Preço de Abertura e Preço de Mercado) e calcula colunas finais.
-    """
-
-    # ==============================
-    # Helpers locais
-    # ==============================
     def br_to_float(x):
         if pd.isna(x):
             return pd.NA
@@ -125,22 +144,16 @@ def processar_dados(df_assessores: pd.DataFrame, df_ops: pd.DataFrame, df_dash: 
         if s == "":
             return pd.NA
         s = s.replace("R$", "").replace(" ", "")
-
         has_comma = "," in s
         has_dot = "." in s
         try:
             if has_comma and has_dot:
-                # decide qual é o decimal olhando o último separador
-                if s.rfind(",") > s.rfind("."):
-                    # BR: 1.234,56
+                if s.rfind(",") > s.rfind("."):   # BR
                     s = s.replace(".", "").replace(",", ".")
-                else:
-                    # US: 1,234.56
+                else:                              # US
                     s = s.replace(",", "")
             elif has_comma and not has_dot:
-                # 149,30
                 s = s.replace(",", ".")
-            # else: 149.30 ou 14930 -> mantém
             return float(s)
         except Exception:
             return pd.NA
@@ -151,25 +164,14 @@ def processar_dados(df_assessores: pd.DataFrame, df_ops: pd.DataFrame, df_dash: 
             return pd.NaT
         return dt.date()
 
-    # ==============================
-    # Validar colunas
-    # ==============================
+    # Valida colunas mínimas
     cols_assessores_obrig = {"Conta", "Nome", "Assessor"}
     cols_ops_obrig = {
-        "Data_Operação",
-        "Conta_Cliente",
-        "Tipo Operação",
-        "Tipo Opção",
-        "Ativo",
-        "Preço Exercício",
-        "Quantidade",
-        "Fixing",
-        "Estrutura",
-        "Ref",
-        "Bid(+)/Offer(-)",
-        "Código do Produto",
+        "Data_Operação", "Conta_Cliente", "Ativo", "Preço Exercício",
+        "Quantidade", "Fixing", "Estrutura", "Ref", "Bid(+)/Offer(-)", "Código do Produto",
+        "Tipo Operação", "Tipo Opção"
     }
-    cols_dash_obrig = {"Conta", "Ativo", "Data de Fixing", "Preço de Abertura", "Preço de Mercado"}
+    cols_dash_obrig = {"Conta", "Ativo", "Data de Fixing", "Preço de Abertura"}
 
     faltando_ass = cols_assessores_obrig - set(df_assessores.columns)
     faltando_ops = cols_ops_obrig - set(df_ops.columns)
@@ -186,17 +188,9 @@ def processar_dados(df_assessores: pd.DataFrame, df_ops: pd.DataFrame, df_dash: 
     df_assessores = df_assessores.copy()
     df_dash = df_dash.copy()
 
-    # ==============================
-    # 1) Unificar operações (planilha padrão)
-    # ==============================
+    # 1) Unificar operações
     group_cols = [
-        "Data_Operação",
-        "Conta_Cliente",
-        "Ativo",
-        "Fixing",
-        "Estrutura",
-        "Ref",
-        "Código do Produto",
+        "Data_Operação", "Conta_Cliente", "Ativo", "Fixing", "Estrutura", "Ref", "Código do Produto"
     ]
 
     agg_dict = {
@@ -208,30 +202,23 @@ def processar_dados(df_assessores: pd.DataFrame, df_ops: pd.DataFrame, df_dash: 
     }
 
     df_grouped = (
-        df_ops
-        .groupby(group_cols, dropna=False)
+        df_ops.groupby(group_cols, dropna=False)
         .agg(agg_dict)
         .reset_index()
     )
 
-    # ==============================
-    # 2) Cruzar com base de assessores
-    # ==============================
+    # 2) Cruzar com assessores
     df_merged = df_grouped.merge(
         df_assessores[["Conta", "Nome", "Assessor"]],
         left_on="Conta_Cliente",
         right_on="Conta",
         how="left",
-    )
-
-    df_merged = df_merged.rename(columns={
+    ).rename(columns={
         "Nome": "Nome Cliente",
         "Bid(+)/Offer(-)": "Paga/Recebe",
     })
 
-    # ==============================
-    # 3) Normalizar tipos e fazer merge com Dash
-    # ==============================
+    # 3) Normalizar tipos
     df_merged["Conta_Cliente"] = pd.to_numeric(df_merged["Conta_Cliente"], errors="coerce")
     df_merged["Ativo"] = df_merged["Ativo"].astype(str).str.strip().str.upper()
     df_merged["Fixing_norm"] = df_merged["Fixing"].apply(norm_date)
@@ -240,16 +227,15 @@ def processar_dados(df_assessores: pd.DataFrame, df_ops: pd.DataFrame, df_dash: 
     df_merged["Quantidade"] = df_merged["Quantidade"].apply(br_to_float)
     df_merged["Paga/Recebe"] = df_merged["Paga/Recebe"].apply(br_to_float)
 
+    # 4) Dash: usar só Preço Abertura (entrada)
     df_dash["Conta"] = pd.to_numeric(df_dash["Conta"], errors="coerce")
     df_dash["Ativo"] = df_dash["Ativo"].astype(str).str.strip().str.upper()
     df_dash["Fixing_norm"] = df_dash["Data de Fixing"].apply(norm_date)
     df_dash["Preço Abertura"] = df_dash["Preço de Abertura"].apply(br_to_float)
-    df_dash["Preço mercado"] = df_dash["Preço de Mercado"].apply(br_to_float)
 
-    # Se o Dash tiver duplicidade por Conta+Ativo+Fixing, pegamos a primeira ocorrência
     dash_keys = ["Conta", "Ativo", "Fixing_norm"]
     df_dash_min = (
-        df_dash[dash_keys + ["Preço Abertura", "Preço mercado"]]
+        df_dash[dash_keys + ["Preço Abertura"]]
         .dropna(subset=dash_keys)
         .drop_duplicates(dash_keys)
     )
@@ -261,68 +247,70 @@ def processar_dados(df_assessores: pd.DataFrame, df_ops: pd.DataFrame, df_dash: 
         how="left",
     )
 
-    # ==============================
-    # 4) Colunas finais
-    # ==============================
-    # Paga/Recebe em texto
+    # 5) Preço de mercado REAL (yfinance)
+    df_merged["Preço mercado"] = df_merged["Ativo"].apply(preco_mercado_b3)
+
+    # 6) Colunas finais
     df_merged["Cliente_Paga_Recebe"] = df_merged["Paga/Recebe"].apply(
         lambda x: "PAGA" if pd.notnull(x) and x < 0 else ("RECEBE" if pd.notnull(x) and x > 0 else "NEUTRO")
     )
 
-    # Preço final = Preço mercado + Bid
     df_merged["Preço final"] = df_merged["Preço mercado"] + df_merged["Paga/Recebe"]
 
-    # Lucro saindo (%) = (Preço final / Preço Abertura - 1) * 100
+    # Lucro saindo (%) -> percentual mesmo
     df_merged["Lucro saindo"] = ((df_merged["Preço final"] / df_merged["Preço Abertura"]) - 1) * 100
 
-    # Bid total = Quantidade * Bid
     df_merged["Bid total"] = df_merged["Quantidade"] * df_merged["Paga/Recebe"]
-
-    # Nocional entrada = Preço Abertura * Quantidade
     df_merged["Nocional entrada"] = df_merged["Preço Abertura"] * df_merged["Quantidade"]
-
-    # Nocional saida = Preço final * Quantidade
     df_merged["Nocional saida"] = df_merged["Preço final"] * df_merged["Quantidade"]
-
-    # Lucro $ Saindo hoje = Nocional saida - Nocional entrada
     df_merged["Lucro $ Saindo hoje"] = df_merged["Nocional saida"] - df_merged["Nocional entrada"]
 
-    # ==============================
-    # 5) Seleção/ordem das colunas (como você pediu)
-    # ==============================
     colunas_saida = [
-        "Data_Operação",
-        "Conta_Cliente",
-        "Assessor",
-        "Nome Cliente",
-        "Ativo",
-        "Preço Exercício",
-        "Quantidade",
-        "Fixing",
-        "Estrutura",
-        "Paga/Recebe",
-        "Cliente_Paga_Recebe",
-        "Preço Abertura",
-        "Preço mercado",
-        "Preço final",
-        "Lucro saindo",
-        "Bid total",
-        "Nocional entrada",
-        "Nocional saida",
-        "Lucro $ Saindo hoje",
+        "Data_Operação", "Conta_Cliente", "Assessor", "Nome Cliente",
+        "Ativo", "Preço Exercício", "Quantidade", "Fixing", "Estrutura",
+        "Paga/Recebe", "Cliente_Paga_Recebe",
+        "Preço Abertura", "Preço mercado", "Preço final", "Lucro saindo",
+        "Bid total", "Nocional entrada", "Nocional saida", "Lucro $ Saindo hoje"
     ]
 
-    # Só por segurança (se alguma coluna faltar)
     colunas_saida = [c for c in colunas_saida if c in df_merged.columns]
-
     return df_merged[colunas_saida]
 
 
 
 def gerar_excel_para_download(df: pd.DataFrame) -> BytesIO:
     output = BytesIO()
+
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
         df.to_excel(writer, index=False, sheet_name="Resultado")
+
+        wb = writer.book
+        ws = writer.sheets["Resultado"]
+
+        fmt_money = wb.add_format({"num_format": 'R$ #,##0.00'})
+        fmt_pct = wb.add_format({"num_format": '0.00"%"'})
+
+        # Mapa de colunas por nome -> índice
+        col_index = {name: i for i, name in enumerate(df.columns)}
+
+        # Percentual
+        if "Lucro saindo" in col_index:
+            ws.set_column(col_index["Lucro saindo"], col_index["Lucro saindo"], 14, fmt_pct)
+
+        # Moeda (a partir de Preço Abertura)
+        money_cols = [
+            "Preço Abertura", "Preço mercado", "Preço final",
+            "Bid total", "Nocional entrada", "Nocional saida", "Lucro $ Saindo hoje"
+        ]
+        for c in money_cols:
+            if c in col_index:
+                ws.set_column(col_index[c], col_index[c], 16, fmt_money)
+
+        # Ajustar largura das colunas “texto”
+        for c in ["Assessor", "Nome Cliente", "Estrutura", "Ativo"]:
+            if c in col_index:
+                ws.set_column(col_index[c], col_index[c], 18)
+
     output.seek(0)
     return output
 
