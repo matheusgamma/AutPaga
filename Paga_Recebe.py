@@ -320,7 +320,7 @@ if st.button("🚀 Processar"):
         st.success("Processamento concluído com sucesso! ✅")
 
         for aviso in avisos:
-            st.warning(aviso)
+            st.info(aviso)
 
         st.subheader("Prévia do Resultado Unificado")
         st.dataframe(df_resultado.head(100))
