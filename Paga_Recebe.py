@@ -39,17 +39,6 @@ def preco_mercado_b3(ativo: str) -> float | None:
     except Exception:
         return None
 
-# =========================
-# NORMALIZAÇÃO DE PREÇO (centavos / lote)
-# =========================
-def normalizar_preco(p):
-    if pd.isna(p):
-        return p
-    # preços absurdos pra ação brasileira → provavelmente centavos ou lote
-    if p > 1000:
-        return p / 100
-    return p
-
 def carregar_arquivo(uploaded_file) -> pd.DataFrame | None:
     """Lê CSV ou Excel e retorna DataFrame."""
     if uploaded_file is None:
@@ -68,73 +57,7 @@ def carregar_arquivo(uploaded_file) -> pd.DataFrame | None:
         return None
 
 
-def primeira_nao_nula(serie: pd.Series):
-    """Retorna o primeiro valor não nulo da série, ou None."""
-    serie_drop = serie.dropna()
-    return serie_drop.iloc[0] if not serie_drop.empty else None
-
-@st.cache_data(show_spinner=False, ttl=60 * 30)
-def get_preco_mercado_yf(ativo: str) -> float | None:
-    """
-    Puxa o preço de mercado via yfinance.
-    Para B3, tenta sufixo .SA (ex: RAIL3 -> RAIL3.SA).
-    """
-    if not ativo or pd.isna(ativo):
-        return None
-
-    ativo = str(ativo).strip().upper()
-
-    # tenta como veio
-    tickers_try = [ativo]
-
-    # se parece ticker B3, tenta .SA
-    if ativo.endswith(("3", "4", "11", "5", "6")) and ".SA" not in ativo:
-        tickers_try.append(f"{ativo}.SA")
-
-    for t in tickers_try:
-        try:
-            tk = yf.Ticker(t)
-            # fast_info costuma ser mais rápido quando disponível
-            price = None
-            if hasattr(tk, "fast_info") and tk.fast_info:
-                price = tk.fast_info.get("last_price", None)
-
-            if price is None:
-                hist = tk.history(period="5d")
-                if hist is not None and not hist.empty:
-                    price = float(hist["Close"].dropna().iloc[-1])
-
-            if price is not None and not (isinstance(price, float) and np.isnan(price)):
-                return float(price)
-        except Exception:
-            continue
-
-    return None
-
-
-
-
-def br_to_float(x):
-    """
-    Converte número vindo como '20,67' ou '20.67' para float.
-    """
-    if pd.isna(x):
-        return np.nan
-    if isinstance(x, (int, float, np.number)):
-        return float(x)
-    s = str(x).strip()
-    if s == "":
-        return np.nan
-    # remove milhares e troca vírgula por ponto quando for padrão BR
-    s = s.replace(".", "").replace(",", ".")
-    try:
-        return float(s)
-    except Exception:
-        return np.nan
-
-
-
-def processar_dados(df_assessores: pd.DataFrame, df_ops: pd.DataFrame, df_dash: pd.DataFrame) -> pd.DataFrame:
+def processar_dados(df_assessores: pd.DataFrame, df_ops: pd.DataFrame, df_dash: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     def br_to_float(x):
         if pd.isna(x):
             return pd.NA
@@ -188,6 +111,8 @@ def processar_dados(df_assessores: pd.DataFrame, df_ops: pd.DataFrame, df_dash: 
     df_assessores = df_assessores.copy()
     df_dash = df_dash.copy()
 
+    avisos: list[str] = []
+
     # 1) Unificar operações
     group_cols = [
         "Data_Operação", "Conta_Cliente", "Ativo", "Fixing", "Estrutura", "Ref", "Código do Produto"
@@ -218,6 +143,13 @@ def processar_dados(df_assessores: pd.DataFrame, df_ops: pd.DataFrame, df_dash: 
         "Bid(+)/Offer(-)": "Paga/Recebe",
     })
 
+    n_sem_assessor = df_merged["Assessor"].isna().sum()
+    if n_sem_assessor:
+        avisos.append(
+            f"{n_sem_assessor} linha(s) sem correspondência na base de Assessores "
+            "(Conta_Cliente não encontrada)."
+        )
+
     # 3) Normalizar tipos
     df_merged["Conta_Cliente"] = pd.to_numeric(df_merged["Conta_Cliente"], errors="coerce")
     df_merged["Ativo"] = df_merged["Ativo"].astype(str).str.strip().str.upper()
@@ -247,8 +179,21 @@ def processar_dados(df_assessores: pd.DataFrame, df_ops: pd.DataFrame, df_dash: 
         how="left",
     )
 
+    n_sem_abertura = df_merged["Preço Abertura"].isna().sum()
+    if n_sem_abertura:
+        avisos.append(
+            f"{n_sem_abertura} linha(s) sem correspondência no Dash "
+            "(Conta/Ativo/Data de Fixing não encontrados) — 'Lucro saindo' ficará em branco para elas."
+        )
+
     # 5) Preço de mercado REAL (yfinance)
     df_merged["Preço mercado"] = df_merged["Ativo"].apply(preco_mercado_b3)
+
+    n_sem_preco_mercado = df_merged["Preço mercado"].isna().sum()
+    if n_sem_preco_mercado:
+        avisos.append(
+            f"{n_sem_preco_mercado} ativo(s) sem preço de mercado retornado pelo yfinance."
+        )
 
     # 6) Colunas finais
     df_merged["Cliente_Paga_Recebe"] = df_merged["Paga/Recebe"].apply(
@@ -274,7 +219,7 @@ def processar_dados(df_assessores: pd.DataFrame, df_ops: pd.DataFrame, df_dash: 
     ]
 
     colunas_saida = [c for c in colunas_saida if c in df_merged.columns]
-    return df_merged[colunas_saida]
+    return df_merged[colunas_saida], avisos
 
 
 
@@ -367,12 +312,16 @@ if st.button("🚀 Processar"):
             st.stop()
 
         try:
-            df_resultado = processar_dados(df_assessores, df_ops, df_dash)
+            df_resultado, avisos = processar_dados(df_assessores, df_ops, df_dash)
         except Exception as e:
             st.error(f"Erro ao processar os dados: {e}")
             st.stop()
 
         st.success("Processamento concluído com sucesso! ✅")
+
+        for aviso in avisos:
+            st.warning(aviso)
+
         st.subheader("Prévia do Resultado Unificado")
         st.dataframe(df_resultado.head(100))
 
