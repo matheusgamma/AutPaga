@@ -4,3 +4,4 @@ openpyxl>=3.1
 xlsxwriter>=3.1
 numpy>=1.26
 yfinance>=0.2.28
+starlette<0.48
