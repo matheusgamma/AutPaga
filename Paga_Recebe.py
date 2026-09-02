@@ -90,7 +90,7 @@ def processar_dados(df_assessores: pd.DataFrame, df_ops: pd.DataFrame, df_dash: 
     # Valida colunas mínimas
     cols_assessores_obrig = {"Conta", "Nome", "Assessor"}
     cols_ops_obrig = {
-        "Data_Operação", "Conta_Cliente", "Ativo", "Preço Exercício",
+        "Data Operação", "Conta Cliente", "Ativo", "Preço Exercício",
         "Quantidade", "Fixing", "Estrutura", "Ref", "Bid(+)/Offer(-)", "Código do Produto",
         "Tipo Operação", "Tipo Opção"
     }
