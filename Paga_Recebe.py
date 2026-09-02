@@ -135,7 +135,7 @@ def processar_dados(df_assessores: pd.DataFrame, df_ops: pd.DataFrame, df_dash: 
     # 2) Cruzar com assessores
     df_merged = df_grouped.merge(
         df_assessores[["Conta", "Nome", "Assessor"]],
-        left_on="Conta_Cliente",
+        left_on="Conta Cliente",
         right_on="Conta",
         how="left",
     ).rename(columns={
@@ -151,7 +151,7 @@ def processar_dados(df_assessores: pd.DataFrame, df_ops: pd.DataFrame, df_dash: 
         )
 
     # 3) Normalizar tipos
-    df_merged["Conta_Cliente"] = pd.to_numeric(df_merged["Conta_Cliente"], errors="coerce")
+    df_merged["Conta Cliente"] = pd.to_numeric(df_merged["Conta Cliente"], errors="coerce")
     df_merged["Ativo"] = df_merged["Ativo"].astype(str).str.strip().str.upper()
     df_merged["Fixing_norm"] = df_merged["Fixing"].apply(norm_date)
 
@@ -174,7 +174,7 @@ def processar_dados(df_assessores: pd.DataFrame, df_ops: pd.DataFrame, df_dash: 
 
     df_merged = df_merged.merge(
         df_dash_min,
-        left_on=["Conta_Cliente", "Ativo", "Fixing_norm"],
+        left_on=["Conta Cliente", "Ativo", "Fixing_norm"],
         right_on=["Conta", "Ativo", "Fixing_norm"],
         how="left",
     )
