@@ -115,7 +115,7 @@ def processar_dados(df_assessores: pd.DataFrame, df_ops: pd.DataFrame, df_dash: 
 
     # 1) Unificar operações
     group_cols = [
-        "Data_Operação", "Conta_Cliente", "Ativo", "Fixing", "Estrutura", "Ref", "Código do Produto"
+        "Data Operação", "Conta Cliente", "Ativo", "Fixing", "Estrutura", "Ref", "Código do Produto"
     ]
 
     agg_dict = {
@@ -211,7 +211,7 @@ def processar_dados(df_assessores: pd.DataFrame, df_ops: pd.DataFrame, df_dash: 
     df_merged["Lucro $ Saindo hoje"] = df_merged["Nocional saida"] - df_merged["Nocional entrada"]
 
     colunas_saida = [
-        "Data_Operação", "Conta_Cliente", "Assessor", "Nome Cliente",
+        "Data Operação", "Conta Cliente", "Assessor", "Nome Cliente",
         "Ativo", "Preço Exercício", "Quantidade", "Fixing", "Estrutura",
         "Paga/Recebe", "Cliente_Paga_Recebe",
         "Preço Abertura", "Preço mercado", "Preço final", "Lucro saindo",
